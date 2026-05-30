@@ -1,0 +1,110 @@
+---
+- name: Install and configure Nexus Repository
+  hosts: nexus
+  become: yes
+
+  tasks:
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - wget
+          - tar
+          - curl
+        state: present
+        update_cache: yes
+
+    - name: Create nexus user
+      ansible.builtin.user:
+        name: nexus
+        home: /opt/nexus
+        shell: /bin/bash
+        create_home: yes
+
+    - name: Stop nexus if running
+      ansible.builtin.systemd_service:
+        name: nexus
+        state: stopped
+      ignore_errors: yes
+
+    - name: Remove old Nexus install
+      ansible.builtin.file:
+        path: /opt/nexus
+        state: absent
+
+    - name: Download Nexus
+      ansible.builtin.get_url:
+        url: https://download.sonatype.com/nexus/3/latest-linux-x86_64.tar.gz
+        dest: /opt/nexus.tar.gz
+        mode: '0644'
+
+    - name: Extract Nexus
+      ansible.builtin.unarchive:
+        src: /opt/nexus.tar.gz
+        dest: /opt/
+        remote_src: yes
+
+    - name: Find extracted Nexus folder
+      ansible.builtin.shell: "ls -d /opt/nexus-* | head -1"
+      register: nexus_extracted
+      changed_when: false
+
+    - name: Rename extracted Nexus folder
+      ansible.builtin.command: "mv {{ nexus_extracted.stdout }} /opt/nexus"
+      args:
+        creates: /opt/nexus/bin/nexus
+
+    - name: Create sonatype-work folder
+      ansible.builtin.file:
+        path: /opt/sonatype-work
+        state: directory
+        owner: nexus
+        group: nexus
+        mode: '0755'
+
+    - name: Set Nexus ownership
+      ansible.builtin.file:
+        path: "{{ item }}"
+        owner: nexus
+        group: nexus
+        recurse: yes
+      loop:
+        - /opt/nexus
+        - /opt/sonatype-work
+
+    - name: Create nexus.rc
+      ansible.builtin.copy:
+        dest: /opt/nexus/bin/nexus.rc
+        content: |
+          run_as_user="nexus"
+        owner: nexus
+        group: nexus
+        mode: '0644'
+
+    - name: Create nexus systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/nexus.service
+        content: |
+          [Unit]
+          Description=Nexus Repository Manager
+          After=network.target
+
+          [Service]
+          Type=forking
+          LimitNOFILE=65536
+          User=nexus
+          Group=nexus
+          ExecStart=/opt/nexus/bin/nexus start
+          ExecStop=/opt/nexus/bin/nexus stop
+          Restart=on-abort
+          TimeoutStartSec=600
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Start and enable Nexus
+      ansible.builtin.systemd_service:
+        name: nexus
+        enabled: yes
+        state: started
+        daemon_reload: yes
